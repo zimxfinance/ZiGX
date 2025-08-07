@@ -18,7 +18,8 @@ contract ZiGX is ERC20, Ownable {
     mapping(string => Phase) public phases;
     string[] public phaseList;
 
-    uint256 public reserveBacking; // USDC reserve value in 6 decimals (e.g., $1 = 1_000_000)
+    // USDC reserve value, 6 decimals
+    uint256 public reserveBacking;
 
     event PhaseCreated(string name, uint256 cap);
     event PhaseStatusChanged(string name, bool isOpen);
@@ -37,7 +38,9 @@ contract ZiGX is ERC20, Ownable {
         emit ReserveUpdated(_newBacking);
     }
 
+    // phase-based unlock logic
     function createPhase(string memory _name, uint256 _cap) external onlyOwner {
+        require(_cap > 0, "Cap must be greater than zero");
         require(phases[_name].cap == 0, "Phase already exists");
         phases[_name] = Phase(_name, _cap, 0, false);
         phaseList.push(_name);
@@ -50,6 +53,7 @@ contract ZiGX is ERC20, Ownable {
         emit PhaseStatusChanged(_name, _isOpen);
     }
 
+    // controlled reserve-backed mint
     function mintWithAudit(address to, uint256 amount, string memory phaseName) external onlyOwner {
         Phase storage p = phases[phaseName];
         require(p.cap > 0, "Invalid phase");
