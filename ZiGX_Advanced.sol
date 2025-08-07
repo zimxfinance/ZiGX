@@ -23,7 +23,7 @@ contract ZiGX is ERC20, Ownable {
     event PhaseCreated(string name, uint256 cap);
     event PhaseStatusChanged(string name, bool isOpen);
     event ReserveUpdated(uint256 newReserve);
-    event MintAudited(address indexed to, uint256 amount, string phase, uint256 reserveAfter);
+    event MintedWithAudit(address indexed to, uint256 amount, string phase, uint256 reserveAfter);
 
     constructor() ERC20("ZiGX", "ZiGX") {}
 
@@ -32,6 +32,7 @@ contract ZiGX is ERC20, Ownable {
     }
 
     function setReserveBacking(uint256 _newBacking) external onlyOwner {
+        require(_newBacking >= totalSupply(), "ZiGX: backing below supply");
         reserveBacking = _newBacking;
         emit ReserveUpdated(_newBacking);
     }
@@ -60,7 +61,7 @@ contract ZiGX is ERC20, Ownable {
         p.minted += amount;
         _mint(to, amount);
 
-        emit MintAudited(to, amount, phaseName, reserveBacking);
+        emit MintedWithAudit(to, amount, phaseName, reserveBacking);
     }
 
     function getPhaseInfo(string memory name) external view returns (string memory, uint256, uint256, bool) {
