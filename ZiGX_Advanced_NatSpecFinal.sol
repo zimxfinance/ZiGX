@@ -95,4 +95,21 @@ contract ZiGX is ERC20, Ownable {
     function getAllPhases() external view returns (string[] memory) {
         return phaseList;
     }
+
+    /// @notice Returns a subset of phase names for pagination.
+    /// @param startIndex Starting index (inclusive).
+    /// @param batchSize Number of phases to return.
+    /// @return Array of phase names.
+    function getPhasesBatch(uint256 startIndex, uint256 batchSize) external view returns (string[] memory) {
+        uint256 endIndex = startIndex + batchSize;
+        if (endIndex > phaseList.length) {
+            endIndex = phaseList.length;
+        }
+        require(startIndex < endIndex, "Invalid range");
+        string[] memory batch = new string[](endIndex - startIndex);
+        for (uint256 i = startIndex; i < endIndex; i++) {
+            batch[i - startIndex] = phaseList[i];
+        }
+        return batch;
+    }
 }
