@@ -1,6 +1,6 @@
 # ZiGX Mainnet Deployment Package
 
-This package contains the final, production-ready smart contract for the ZiGX token to be deployed on Base Mainnet.
+This package contains the final, production-ready smart contract for the ZiGX token deployed on Base Mainnet.
 
 ## Purpose
 
