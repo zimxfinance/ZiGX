@@ -7,7 +7,7 @@ interface IReserveOracle {
     function confirmMint(address to, uint256 amount, bytes calldata proof)
         external
         view
-        returns (bool ok, uint256 usdReserves, bool stale);
+        returns (bool ok, uint256 usdReserves, bool stale, uint256 validUntil, bytes32 domain);
 }
 
 contract ZiGX is ERC20 {
@@ -19,18 +19,37 @@ contract ZiGX is ERC20 {
     address public reserveOracle;
     address public reserveVault;
 
+    mapping(bytes32 => bool) public usedProof;
+
     uint256 public reserveDataStalePeriod = 1 days;
     uint256 private _cachedReserveRatioBps;
     uint256 private _cachedUsdReserves;
     uint256 private _lastReserveUpdate;
 
+    uint256 public oracleTtl = 15 minutes;
+    uint256 public lastOracleUpdateAt;
+
+    uint256 public ratioFloorBps = 10_000;
+
     uint256 public maxMintPerTx;
     uint256 public maxMintPerDayBps;
     uint256 public mintedToday;
     uint256 public currentMintDay;
+    uint256 public maxMintPerHourBps;
+    uint256 public mintedInHour;
+    uint256 public currentMintHour;
+
+    uint256 public parameterChangeDelay = 1 hours;
+    address public pendingReserveOracle;
+    uint256 public reserveOracleChangeReadyAt;
+    address public pendingReserveVault;
+    uint256 public reserveVaultChangeReadyAt;
+
+    uint8 public oracleDecimals = 6;
 
     mapping(uint256 => bytes32) public auditReportHash;
     string public porDashboardRef;
+    bool public porRefLocked;
     bytes32 public contractCommitmentHash;
 
     bool private _paused;
@@ -41,13 +60,27 @@ contract ZiGX is ERC20 {
     event Paused(address indexed account);
     event Unpaused(address indexed account);
     event MintLimitsUpdated(uint256 maxMintPerTx, uint256 maxMintPerDayBps);
+    event HourlyMintLimitUpdated(uint256 maxMintPerHourBps);
     event ProofOfReserveUsed(address indexed to, uint256 amount, uint256 usdReserves, uint256 reserveRatioBps, bytes32 proofHash);
+    event ProofConsumed(bytes32 indexed proofHash);
+    event MintWindowRolled(uint256 newHourStart);
     event MintedAgainstReserve(address indexed to, uint256 amount);
-    event Burned(address indexed from, uint256 amount);
-    event GovernanceBurned(address indexed from, uint256 amount);
+    event UserBurned(address indexed from, uint256 amount);
+    event GovernanceBurned(address indexed from, uint256 amount, string reason);
     event AuditReportPosted(uint256 indexed quarter, bytes32 hash);
     event PoRDashboardPinned(string ref);
+    event PoRRefLocked();
     event CommitmentHashSet(bytes32 hash);
+    event EmergencyHalt(string reason);
+    event ResumeOperations(string note);
+    event OracleTtlUpdated(uint256 previousTtl, uint256 nextTtl);
+    event RatioFloorUpdated(uint256 previousFloorBps, uint256 nextFloorBps);
+    event ParameterChangeDelayUpdated(uint256 previousDelay, uint256 nextDelay);
+    event OracleDecimalsUpdated(uint8 previousDecimals, uint8 nextDecimals);
+    event ReserveOracleProposed(address indexed proposedOracle, uint256 readyAt);
+    event ReserveOracleActivated(address indexed previousOracle, address indexed newOracle);
+    event ReserveVaultProposed(address indexed proposedVault, uint256 readyAt);
+    event ReserveVaultActivated(address indexed previousVault, address indexed newVault);
 
     modifier onlyGovernance() {
         require(msg.sender == governance, "ZiGX: not governance");
@@ -74,24 +107,80 @@ contract ZiGX is ERC20 {
         governance = newGovernance;
     }
 
-    function setReserveOracle(address newOracle) external onlyGovernance {
-        require(newOracle != address(0), "ZiGX: zero oracle");
-        emit ReserveOracleUpdated(reserveOracle, newOracle);
-        reserveOracle = newOracle;
-    }
-
-    function setReserveVault(address newVault) external onlyGovernance {
-        require(newVault != address(0), "ZiGX: zero vault");
-        emit ReserveVaultUpdated(reserveVault, newVault);
-        reserveVault = newVault;
-    }
-
     function setMintLimits(uint256 _maxMintPerTx, uint256 _maxMintPerDayBps) external onlyGovernance {
         require(_maxMintPerDayBps <= 10_000, "ZiGX: day bps too high");
         require(_maxMintPerTx <= MAX_SUPPLY, "ZiGX: tx limit too high");
         maxMintPerTx = _maxMintPerTx;
         maxMintPerDayBps = _maxMintPerDayBps;
         emit MintLimitsUpdated(_maxMintPerTx, _maxMintPerDayBps);
+    }
+
+    function setHourlyMintLimit(uint256 _maxMintPerHourBps) external onlyGovernance {
+        require(_maxMintPerHourBps <= 10_000, "ZiGX: hour bps too high");
+        maxMintPerHourBps = _maxMintPerHourBps;
+        emit HourlyMintLimitUpdated(_maxMintPerHourBps);
+    }
+
+    function setOracleTtl(uint256 newOracleTtl) external onlyGovernance {
+        require(newOracleTtl >= 5 minutes && newOracleTtl <= 24 hours, "ZiGX: ttl range");
+        emit OracleTtlUpdated(oracleTtl, newOracleTtl);
+        oracleTtl = newOracleTtl;
+    }
+
+    function setRatioFloorBps(uint256 newRatioFloorBps) external onlyGovernance {
+        require(newRatioFloorBps >= 10_000, "ZiGX: floor too low");
+        emit RatioFloorUpdated(ratioFloorBps, newRatioFloorBps);
+        ratioFloorBps = newRatioFloorBps;
+    }
+
+    function setParameterChangeDelay(uint256 newDelay) external onlyGovernance {
+        require(newDelay >= 10 minutes && newDelay <= 48 hours, "ZiGX: delay range");
+        emit ParameterChangeDelayUpdated(parameterChangeDelay, newDelay);
+        parameterChangeDelay = newDelay;
+    }
+
+    function setOracleDecimals(uint8 nextOracleDecimals) external onlyGovernance {
+        require(nextOracleDecimals >= 2 && nextOracleDecimals <= 18, "ZiGX: decimals range");
+        emit OracleDecimalsUpdated(oracleDecimals, nextOracleDecimals);
+        oracleDecimals = nextOracleDecimals;
+    }
+
+    function proposeReserveOracle(address newOracle) external onlyGovernance {
+        require(newOracle != address(0), "ZiGX: zero oracle");
+        require(newOracle.code.length > 0, "ZiGX: oracle !contract");
+        pendingReserveOracle = newOracle;
+        reserveOracleChangeReadyAt = block.timestamp + parameterChangeDelay;
+        emit ReserveOracleProposed(newOracle, reserveOracleChangeReadyAt);
+    }
+
+    function activateReserveOracle() external onlyGovernance {
+        require(pendingReserveOracle != address(0), "ZiGX: no pending oracle");
+        require(block.timestamp >= reserveOracleChangeReadyAt, "ZiGX: oracle change pending");
+        address previousOracle = reserveOracle;
+        reserveOracle = pendingReserveOracle;
+        pendingReserveOracle = address(0);
+        reserveOracleChangeReadyAt = 0;
+        emit ReserveOracleActivated(previousOracle, reserveOracle);
+        emit ReserveOracleUpdated(previousOracle, reserveOracle);
+    }
+
+    function proposeReserveVault(address newVault) external onlyGovernance {
+        require(newVault != address(0), "ZiGX: zero vault");
+        require(newVault.code.length > 0, "ZiGX: vault !contract");
+        pendingReserveVault = newVault;
+        reserveVaultChangeReadyAt = block.timestamp + parameterChangeDelay;
+        emit ReserveVaultProposed(newVault, reserveVaultChangeReadyAt);
+    }
+
+    function activateReserveVault() external onlyGovernance {
+        require(pendingReserveVault != address(0), "ZiGX: no pending vault");
+        require(block.timestamp >= reserveVaultChangeReadyAt, "ZiGX: vault change pending");
+        address previousVault = reserveVault;
+        reserveVault = pendingReserveVault;
+        pendingReserveVault = address(0);
+        reserveVaultChangeReadyAt = 0;
+        emit ReserveVaultActivated(previousVault, reserveVault);
+        emit ReserveVaultUpdated(previousVault, reserveVault);
     }
 
     function setReserveDataStalePeriod(uint256 newPeriod) external onlyGovernance {
@@ -104,10 +193,24 @@ contract ZiGX is ERC20 {
         emit Paused(msg.sender);
     }
 
+    function emergencyHalt(string calldata reason) external onlyGovernance {
+        emit EmergencyHalt(reason);
+        pause();
+    }
+
     function unpause() external onlyGovernance {
+        _unpauseInternal("standard");
+    }
+
+    function unpause(string calldata note) external onlyGovernance {
+        _unpauseInternal(note);
+    }
+
+    function _unpauseInternal(string memory note) internal {
         require(_paused, "ZiGX: not paused");
         _paused = false;
         emit Unpaused(msg.sender);
+        emit ResumeOperations(note);
     }
 
     function paused() external view returns (bool) {
@@ -121,6 +224,13 @@ contract ZiGX is ERC20 {
             require(amount <= maxMintPerTx, "ZiGX: tx mint limit");
         }
 
+        uint256 hour = block.timestamp / 1 hours;
+        if (hour != currentMintHour) {
+            currentMintHour = hour;
+            mintedInHour = 0;
+            emit MintWindowRolled(hour * 1 hours);
+        }
+
         uint256 day = block.timestamp / 1 days;
         if (day != currentMintDay) {
             currentMintDay = day;
@@ -132,37 +242,70 @@ contract ZiGX is ERC20 {
             require(mintedToday + amount <= dailyLimit, "ZiGX: day mint limit");
         }
 
+        if (maxMintPerHourBps != 0) {
+            uint256 hourlyLimit = (MAX_SUPPLY * maxMintPerHourBps) / 10_000;
+            require(mintedInHour + amount <= hourlyLimit, "ZiGX: hour mint limit");
+        }
+
         require(reserveOracle != address(0), "ZiGX: oracle unset");
-        (bool ok, uint256 usdReserves, bool stale) = IReserveOracle(reserveOracle).confirmMint(msg.sender, amount, proof);
+        (bool ok, uint256 usdReserves, bool stale, uint256 validUntil, bytes32 domain) = IReserveOracle(reserveOracle)
+            .confirmMint(msg.sender, amount, proof);
         require(ok, "ZiGX: oracle denied");
         require(!stale, "ZiGX: oracle stale");
+        require(block.timestamp <= validUntil, "ZiGX: oracle expired");
 
-        mintedToday += amount;
+        bytes32 expectedDomain = keccak256(abi.encode(block.chainid, address(this)));
+        require(domain == expectedDomain, "ZiGX: oracle domain");
+
+        if (lastOracleUpdateAt != 0) {
+            require(block.timestamp - lastOracleUpdateAt <= oracleTtl, "ZiGX: oracle ttl");
+        }
+
+        bytes32 proofHash = keccak256(proof);
+        require(!usedProof[proofHash], "ZiGX: proof used");
+
+        uint256 normalizedReserves = _normalizeUsdReserves(usdReserves);
 
         uint256 newSupply = totalSupply() + amount;
-        _updateReserveData(usdReserves, newSupply);
+        uint256 postRatioBps = (normalizedReserves * 10_000) / newSupply;
+        require(postRatioBps >= ratioFloorBps, "ZiGX: reserve ratio");
+
+        mintedToday += amount;
+        mintedInHour += amount;
+        usedProof[proofHash] = true;
+
+        _updateReserveData(normalizedReserves, newSupply);
 
         _mint(msg.sender, amount);
 
-        bytes32 proofHash = keccak256(proof);
-        emit ProofOfReserveUsed(msg.sender, amount, usdReserves, _cachedReserveRatioBps, proofHash);
+        emit ProofConsumed(proofHash);
+        emit ProofOfReserveUsed(msg.sender, amount, normalizedReserves, _cachedReserveRatioBps, proofHash);
         emit MintedAgainstReserve(msg.sender, amount);
     }
 
     function burn(uint256 amount) external whenNotPaused {
         _burn(msg.sender, amount);
-        emit Burned(msg.sender, amount);
+        emit UserBurned(msg.sender, amount);
     }
 
     function burnFrom(address account, uint256 amount) external whenNotPaused {
         _spendAllowance(account, msg.sender, amount);
         _burn(account, amount);
-        emit Burned(account, amount);
+        emit UserBurned(account, amount);
     }
 
     function governanceBurn(address account, uint256 amount) external onlyGovernance whenNotPaused {
+        _governanceBurn(account, amount, "");
+    }
+
+    function governanceBurn(address account, uint256 amount, string calldata reason) external onlyGovernance whenNotPaused {
+        _governanceBurn(account, amount, reason);
+    }
+
+    function _governanceBurn(address account, uint256 amount, string memory reason) internal {
+        require(account != address(0), "ZiGX: burn zero");
         _burn(account, amount);
-        emit GovernanceBurned(account, amount);
+        emit GovernanceBurned(account, amount, reason);
     }
 
     function postAuditReport(uint256 quarter, bytes32 hash) external onlyGovernance {
@@ -174,9 +317,11 @@ contract ZiGX is ERC20 {
 
     function pinPoRDashboard(string calldata ref) external onlyGovernance {
         require(bytes(ref).length != 0, "ZiGX: empty ref");
-        require(bytes(porDashboardRef).length == 0, "ZiGX: dashboard set");
+        require(!porRefLocked, "ZiGX: dashboard locked");
         porDashboardRef = ref;
         emit PoRDashboardPinned(ref);
+        porRefLocked = true;
+        emit PoRRefLocked();
     }
 
     function setCommitmentHash(bytes32 hash) external onlyGovernance {
@@ -218,10 +363,23 @@ contract ZiGX is ERC20 {
     function _updateReserveData(uint256 usdReserves, uint256 supply) internal {
         _cachedUsdReserves = usdReserves;
         _lastReserveUpdate = block.timestamp;
+        lastOracleUpdateAt = block.timestamp;
         if (supply == 0) {
             _cachedReserveRatioBps = 0;
         } else {
             _cachedReserveRatioBps = (usdReserves * 10_000) / supply;
+        }
+    }
+
+    function _normalizeUsdReserves(uint256 usdReserves) internal view returns (uint256) {
+        if (oracleDecimals == CUSTOM_DECIMALS) {
+            return usdReserves;
+        } else if (oracleDecimals > CUSTOM_DECIMALS) {
+            uint256 scaleDown = 10 ** (oracleDecimals - CUSTOM_DECIMALS);
+            return usdReserves / scaleDown;
+        } else {
+            uint256 scaleUp = 10 ** (CUSTOM_DECIMALS - oracleDecimals);
+            return usdReserves * scaleUp;
         }
     }
 
