@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.19;
+pragma solidity ^0.8.20;
 
-import "https://github.com/OpenZeppelin/openzeppelin-contracts/blob/v4.9.3/contracts/token/ERC20/ERC20.sol";
+import "https://github.com/OpenZeppelin/openzeppelin-contracts/blob/v5.0.2/contracts/token/ERC20/ERC20.sol";
 
 interface IReserveOracle {
     function confirmMint(address to, uint256 amount, bytes calldata proof)
@@ -13,10 +13,11 @@ interface IReserveOracle {
 contract ZiGX is ERC20 {
     uint8 private constant CUSTOM_DECIMALS = 6;
     uint256 public constant MAX_SUPPLY = 100_000_000 * 10 ** CUSTOM_DECIMALS;
+    uint256 public constant GOVERNANCE_ENABLE_TS = 1_798_761_600; // 2027-01-01 00:00:00 UTC
     uint256 public constant RESERVE_LOCK_UNTIL = 1_735_689_600; // Jan 1, 2030 UTC
 
     address public governance;
-    address public reserveOracle;
+    IReserveOracle public reserveOracle;
     address public reserveVault;
 
     mapping(bytes32 => bool) public usedProof;
@@ -46,6 +47,8 @@ contract ZiGX is ERC20 {
     uint256 public reserveVaultChangeReadyAt;
 
     uint8 public oracleDecimals = 6;
+    uint256 public lastReserveUsd;
+    uint256 public lastReserveUpdateAt;
 
     mapping(uint256 => bytes32) public auditReportHash;
     string public porDashboardRef;
@@ -55,8 +58,8 @@ contract ZiGX is ERC20 {
     bool private _paused;
 
     event GovernanceTransferred(address indexed previousGovernance, address indexed newGovernance);
-    event ReserveOracleUpdated(address indexed previousOracle, address indexed newOracle);
-    event ReserveVaultUpdated(address indexed previousVault, address indexed newVault);
+    event ReserveOracleUpdated(address indexed prev, address indexed next);
+    event ReserveVaultUpdated(address indexed prev, address indexed next);
     event Paused(address indexed account);
     event Unpaused(address indexed account);
     event MintLimitsUpdated(uint256 maxMintPerTx, uint256 maxMintPerDayBps);
@@ -65,6 +68,7 @@ contract ZiGX is ERC20 {
     event ProofConsumed(bytes32 indexed proofHash);
     event MintWindowRolled(uint256 newHourStart);
     event MintedAgainstReserve(address indexed to, uint256 amount);
+    event MintApproved(address indexed to, uint256 amount, uint256 newSupply, uint256 confirmedReservesUsd);
     event UserBurned(address indexed from, uint256 amount);
     event GovernanceBurned(address indexed from, uint256 amount, string reason);
     event AuditReportPosted(uint256 indexed quarter, bytes32 hash);
@@ -89,6 +93,11 @@ contract ZiGX is ERC20 {
 
     modifier whenNotPaused() {
         require(!_paused, "ZiGX: mint/burn paused");
+        _;
+    }
+
+    modifier after2027() {
+        require(block.timestamp >= GOVERNANCE_ENABLE_TS, "GOV_LOCKED_UNTIL_2027");
         _;
     }
 
@@ -156,12 +165,12 @@ contract ZiGX is ERC20 {
     function activateReserveOracle() external onlyGovernance {
         require(pendingReserveOracle != address(0), "ZiGX: no pending oracle");
         require(block.timestamp >= reserveOracleChangeReadyAt, "ZiGX: oracle change pending");
-        address previousOracle = reserveOracle;
-        reserveOracle = pendingReserveOracle;
+        address previousOracle = address(reserveOracle);
+        reserveOracle = IReserveOracle(pendingReserveOracle);
         pendingReserveOracle = address(0);
         reserveOracleChangeReadyAt = 0;
-        emit ReserveOracleActivated(previousOracle, reserveOracle);
-        emit ReserveOracleUpdated(previousOracle, reserveOracle);
+        emit ReserveOracleActivated(previousOracle, address(reserveOracle));
+        emit ReserveOracleUpdated(previousOracle, address(reserveOracle));
     }
 
     function proposeReserveVault(address newVault) external onlyGovernance {
@@ -183,6 +192,17 @@ contract ZiGX is ERC20 {
         emit ReserveVaultUpdated(previousVault, reserveVault);
     }
 
+    function setReserveOracle(IReserveOracle newOracle) external onlyGovernance after2027 {
+        emit ReserveOracleUpdated(address(reserveOracle), address(newOracle));
+        reserveOracle = newOracle;
+    }
+
+    function setReserveVault(address newVault) external onlyGovernance after2027 {
+        require(newVault != address(0), "RESERVE_VAULT_ZERO");
+        emit ReserveVaultUpdated(reserveVault, newVault);
+        reserveVault = newVault;
+    }
+
     function setReserveDataStalePeriod(uint256 newPeriod) external onlyGovernance {
         reserveDataStalePeriod = newPeriod;
     }
@@ -198,11 +218,11 @@ contract ZiGX is ERC20 {
         pause();
     }
 
-    function unpause() external onlyGovernance {
+    function unpause() external onlyGovernance after2027 {
         _unpauseInternal("standard");
     }
 
-    function unpause(string calldata note) external onlyGovernance {
+    function unpause(string calldata note) external onlyGovernance after2027 {
         _unpauseInternal(note);
     }
 
@@ -215,6 +235,24 @@ contract ZiGX is ERC20 {
 
     function paused() external view returns (bool) {
         return _paused;
+    }
+
+    function mint(address to, uint256 amount, bytes calldata proof)
+        external
+        onlyGovernance
+        whenNotPaused
+    {
+        require(address(reserveOracle) != address(0), "ORACLE_NOT_SET");
+        require(totalSupply() + amount <= MAX_SUPPLY, "MAX_SUPPLY");
+
+        (bool ok, uint256 usdReserves, bool stale, uint256 validUntil, ) =
+            reserveOracle.confirmMint(to, amount, proof);
+
+        require(ok, "ORACLE_REJECTED");
+        require(!stale, "ORACLE_STALE");
+        require(block.timestamp <= validUntil, "ORACLE_EXPIRED");
+
+        _finalizeMint(to, amount, usdReserves);
     }
 
     function mintAgainstReserve(uint256 amount, bytes calldata proof) external onlyGovernance whenNotPaused {
@@ -247,12 +285,12 @@ contract ZiGX is ERC20 {
             require(mintedInHour + amount <= hourlyLimit, "ZiGX: hour mint limit");
         }
 
-        require(reserveOracle != address(0), "ZiGX: oracle unset");
-        (bool ok, uint256 usdReserves, bool stale, uint256 validUntil, bytes32 domain) = IReserveOracle(reserveOracle)
-            .confirmMint(msg.sender, amount, proof);
-        require(ok, "ZiGX: oracle denied");
-        require(!stale, "ZiGX: oracle stale");
-        require(block.timestamp <= validUntil, "ZiGX: oracle expired");
+        require(address(reserveOracle) != address(0), "ORACLE_NOT_SET");
+        (bool ok, uint256 usdReserves, bool stale, uint256 validUntil, bytes32 domain) =
+            reserveOracle.confirmMint(msg.sender, amount, proof);
+        require(ok, "ORACLE_REJECTED");
+        require(!stale, "ORACLE_STALE");
+        require(block.timestamp <= validUntil, "ORACLE_EXPIRED");
 
         bytes32 expectedDomain = keccak256(abi.encode(block.chainid, address(this)));
         require(domain == expectedDomain, "ZiGX: oracle domain");
@@ -274,13 +312,25 @@ contract ZiGX is ERC20 {
         mintedInHour += amount;
         usedProof[proofHash] = true;
 
-        _updateReserveData(normalizedReserves, newSupply);
-
-        _mint(msg.sender, amount);
+        _finalizeMint(msg.sender, amount, usdReserves);
 
         emit ProofConsumed(proofHash);
         emit ProofOfReserveUsed(msg.sender, amount, normalizedReserves, _cachedReserveRatioBps, proofHash);
         emit MintedAgainstReserve(msg.sender, amount);
+    }
+
+    function _finalizeMint(address to, uint256 amount, uint256 usdReserves) internal {
+        uint256 reserves6 = _to6(usdReserves);
+        require(totalSupply() + amount <= reserves6, "INSUFFICIENT_RESERVES");
+
+        _mint(to, amount);
+
+        lastReserveUsd = reserves6;
+        lastReserveUpdateAt = block.timestamp;
+
+        _updateReserveData(reserves6, totalSupply());
+
+        emit MintApproved(to, amount, totalSupply(), reserves6);
     }
 
     function burn(uint256 amount) external whenNotPaused {
@@ -360,6 +410,12 @@ contract ZiGX is ERC20 {
         dashboardRef = porDashboardRef;
     }
 
+    function _to6(uint256 v) internal view returns (uint256) {
+        if (oracleDecimals == 6) return v;
+        if (oracleDecimals > 6) return v / (10 ** (oracleDecimals - 6));
+        return v * (10 ** (6 - oracleDecimals));
+    }
+
     function _updateReserveData(uint256 usdReserves, uint256 supply) internal {
         _cachedUsdReserves = usdReserves;
         _lastReserveUpdate = block.timestamp;
@@ -372,15 +428,7 @@ contract ZiGX is ERC20 {
     }
 
     function _normalizeUsdReserves(uint256 usdReserves) internal view returns (uint256) {
-        if (oracleDecimals == CUSTOM_DECIMALS) {
-            return usdReserves;
-        } else if (oracleDecimals > CUSTOM_DECIMALS) {
-            uint256 scaleDown = 10 ** (oracleDecimals - CUSTOM_DECIMALS);
-            return usdReserves / scaleDown;
-        } else {
-            uint256 scaleUp = 10 ** (CUSTOM_DECIMALS - oracleDecimals);
-            return usdReserves * scaleUp;
-        }
+        return _to6(usdReserves);
     }
 
     function _isReserveDataStale() internal view returns (bool) {
