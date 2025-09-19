@@ -1,27 +1,22 @@
-# ZiGX Mainnet Deployment Package
+# ZiGX Contracts
 
-This package contains the final, production-ready smart contract for the ZiGX token deployed on Base Mainnet.
+Smart contracts for the **ZiGX token**, to be deployed on Base L2.  
+ZiGX is a USDC-backed settlement token used for reserves, remittances and SME payments.
 
-## Purpose
-
-ZiGX is a reserve-backed digital stable token pegged 1:1 to the US dollar. Its architecture ensures stability, transparency, and immutability through fixed-supply minting phases and auditable reserve control.
-
-## Files
-
-- `ZiGX_Advanced_MainnetFinal.sol`: The full, verified ZiGX smart contract with NatSpec comments and frontend-ready pagination support.  
-- `README.md`: This documentation.
-
-## Deployment Notes
-
-- Deploy using the recommended Solidity compiler version.  
-- Verify contract source code on BaseScan for transparency.  
-- Confirm reserve wallet and minting phases before final deployment.  
-- Multisig setup recommended for treasury control and contract ownership.
-
-## Support & Issues
-
-For questions or issues related to the ZiGX contract, please open an issue in this repository.
+🌐 [zigx.io](https://zigx.io)
 
 ---
 
-© Blackmass Enterprises Ltd. All rights reserved.
+## Contracts
+- **ZiGX_Advanced_MainnetFinal.sol** – capped supply settlement token (100M max supply)
+
+---
+
+## Features
+- Fixed supply (100,000,000 ZiGX)
+- Minting only with signed custodian attestations (EIP-712)
+- Burn-for-redemption with off-chain payout references
+- Proof-of-Reserves anchoring (merkle root + report CID)
+- Governance functions locked until 2027
+- Admin through multisig + timelock
+
