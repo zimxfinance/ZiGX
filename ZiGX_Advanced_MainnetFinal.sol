@@ -57,6 +57,19 @@ contract ZiGX is ERC20 {
 
     bool private _paused;
 
+    bytes32 private _lastPoRMerkleRoot;
+    string private _lastPoRReportCID;
+    uint256 private _lastPoRUpdateAt;
+
+    event AttestedMint(
+        address indexed custodian,
+        address indexed to,
+        uint256 amount,
+        bytes32 indexed depositId,
+        uint256 validUntil
+    );
+    event Redeemed(address indexed from, uint256 amount, bytes32 offchainRef);
+    event PoRRootUpdated(bytes32 indexed merkleRoot, string reportCID, uint256 timestamp);
     event GovernanceTransferred(address indexed previousGovernance, address indexed newGovernance);
     event ReserveOracleUpdated(address indexed prev, address indexed next);
     event ReserveVaultUpdated(address indexed prev, address indexed next);
@@ -252,7 +265,11 @@ contract ZiGX is ERC20 {
         require(!stale, "ORACLE_STALE");
         require(block.timestamp <= validUntil, "ORACLE_EXPIRED");
 
+        bytes32 depositId = keccak256(proof);
+
         _finalizeMint(to, amount, usdReserves);
+
+        emit AttestedMint(msg.sender, to, amount, depositId, validUntil);
     }
 
     function mintAgainstReserve(uint256 amount, bytes calldata proof) external onlyGovernance whenNotPaused {
@@ -338,6 +355,13 @@ contract ZiGX is ERC20 {
         emit UserBurned(msg.sender, amount);
     }
 
+    function burnForRedemption(uint256 amount, bytes32 offchainRef) external whenNotPaused {
+        require(offchainRef != bytes32(0), "ZiGX: invalid offchain ref");
+        _burn(msg.sender, amount);
+        emit UserBurned(msg.sender, amount);
+        emit Redeemed(msg.sender, amount, offchainRef);
+    }
+
     function burnFrom(address account, uint256 amount) external whenNotPaused {
         _spendAllowance(account, msg.sender, amount);
         _burn(account, amount);
@@ -379,6 +403,36 @@ contract ZiGX is ERC20 {
         require(contractCommitmentHash == bytes32(0), "ZiGX: commitment set");
         contractCommitmentHash = hash;
         emit CommitmentHashSet(hash);
+    }
+
+    function setPoRRoot(bytes32 merkleRoot, string calldata reportCID) external onlyGovernance {
+        require(merkleRoot != bytes32(0), "ZiGX: invalid PoR root");
+        require(bytes(reportCID).length != 0, "ZiGX: empty report CID");
+
+        _lastPoRMerkleRoot = merkleRoot;
+        _lastPoRReportCID = reportCID;
+        _lastPoRUpdateAt = block.timestamp;
+
+        emit PoRRootUpdated(merkleRoot, reportCID, block.timestamp);
+    }
+
+    function lastPoR()
+        external
+        view
+        returns (bytes32 merkleRoot, string memory reportCID, uint256 updatedAt)
+    {
+        merkleRoot = _lastPoRMerkleRoot;
+        reportCID = _lastPoRReportCID;
+        updatedAt = _lastPoRUpdateAt;
+    }
+
+    function supplyTelemetry()
+        external
+        view
+        returns (uint256 totalSupplyZiGX, uint256 maxSupplyZiGX)
+    {
+        totalSupplyZiGX = totalSupply();
+        maxSupplyZiGX = MAX_SUPPLY;
     }
 
     function reserveLockStatement() external view returns (uint256 lockUntil, bool isPastLock) {
