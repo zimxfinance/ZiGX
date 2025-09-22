@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
-import "https://github.com/OpenZeppelin/openzeppelin-contracts/blob/v5.0.2/contracts/token/ERC20/ERC20.sol";
+import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 
 interface IReserveOracle {
     function confirmMint(address to, uint256 amount, bytes calldata proof)
@@ -13,10 +13,9 @@ interface IReserveOracle {
 contract ZiGX is ERC20 {
     uint8 private constant CUSTOM_DECIMALS = 6;
     uint256 public constant MAX_SUPPLY = 100_000_000 * 10 ** CUSTOM_DECIMALS;
-    uint256 public constant GOVERNANCE_ENABLE_TS = 1_798_761_600; // 2027-01-01 00:00:00 UTC
     uint256 public constant RESERVE_LOCK_UNTIL = 1_735_689_600; // Jan 1, 2030 UTC
 
-    address public governance;
+    address public governance; // Gnosis Safe
     IReserveOracle public reserveOracle;
     address public reserveVault;
 
@@ -61,6 +60,28 @@ contract ZiGX is ERC20 {
     string private _lastPoRReportCID;
     uint256 private _lastPoRUpdateAt;
 
+    address public timelock; // OZ TimelockController
+    address public guardian; // emergency unpause only
+
+    error NotGovernance();
+    error NotTimelock();
+    error NotGuardian();
+
+    modifier onlyGovernance() {
+        if (msg.sender != governance) revert NotGovernance();
+        _;
+    }
+
+    modifier onlyTimelock() {
+        if (msg.sender != timelock) revert NotTimelock();
+        _;
+    }
+
+    modifier onlyGuardian() {
+        if (msg.sender != guardian) revert NotGuardian();
+        _;
+    }
+
     event AttestedMint(
         address indexed custodian,
         address indexed to,
@@ -99,37 +120,40 @@ contract ZiGX is ERC20 {
     event ReserveVaultProposed(address indexed proposedVault, uint256 readyAt);
     event ReserveVaultActivated(address indexed previousVault, address indexed newVault);
 
-    modifier onlyGovernance() {
-        require(msg.sender == governance, "ZiGX: not governance");
-        _;
-    }
-
     modifier whenNotPaused() {
         require(!_paused, "ZiGX: mint/burn paused");
         _;
     }
 
-    modifier after2027() {
-        require(block.timestamp >= GOVERNANCE_ENABLE_TS, "GOV_LOCKED_UNTIL_2027");
-        _;
-    }
-
     constructor() ERC20("ZiGX", "ZiGX") {
         governance = msg.sender;
+        timelock = msg.sender;
         emit GovernanceTransferred(address(0), msg.sender);
+    }
+
+    function setGovernance(address g) external onlyTimelock {
+        governance = g;
+    }
+
+    function setTimelock(address t) external onlyTimelock {
+        timelock = t;
+    }
+
+    function setGuardian(address g) external onlyTimelock {
+        guardian = g;
     }
 
     function decimals() public view virtual override returns (uint8) {
         return CUSTOM_DECIMALS;
     }
 
-    function transferGovernance(address newGovernance) external onlyGovernance {
+    function transferGovernance(address newGovernance) external onlyTimelock {
         require(newGovernance != address(0), "ZiGX: zero governance");
         emit GovernanceTransferred(governance, newGovernance);
         governance = newGovernance;
     }
 
-    function setMintLimits(uint256 _maxMintPerTx, uint256 _maxMintPerDayBps) external onlyGovernance {
+    function setMintLimits(uint256 _maxMintPerTx, uint256 _maxMintPerDayBps) external onlyTimelock {
         require(_maxMintPerDayBps <= 10_000, "ZiGX: day bps too high");
         require(_maxMintPerTx <= MAX_SUPPLY, "ZiGX: tx limit too high");
         maxMintPerTx = _maxMintPerTx;
@@ -137,37 +161,37 @@ contract ZiGX is ERC20 {
         emit MintLimitsUpdated(_maxMintPerTx, _maxMintPerDayBps);
     }
 
-    function setHourlyMintLimit(uint256 _maxMintPerHourBps) external onlyGovernance {
+    function setHourlyMintLimit(uint256 _maxMintPerHourBps) external onlyTimelock {
         require(_maxMintPerHourBps <= 10_000, "ZiGX: hour bps too high");
         maxMintPerHourBps = _maxMintPerHourBps;
         emit HourlyMintLimitUpdated(_maxMintPerHourBps);
     }
 
-    function setOracleTtl(uint256 newOracleTtl) external onlyGovernance {
+    function setOracleTtl(uint256 newOracleTtl) external onlyTimelock {
         require(newOracleTtl >= 5 minutes && newOracleTtl <= 24 hours, "ZiGX: ttl range");
         emit OracleTtlUpdated(oracleTtl, newOracleTtl);
         oracleTtl = newOracleTtl;
     }
 
-    function setRatioFloorBps(uint256 newRatioFloorBps) external onlyGovernance {
+    function setRatioFloorBps(uint256 newRatioFloorBps) external onlyTimelock {
         require(newRatioFloorBps >= 10_000, "ZiGX: floor too low");
         emit RatioFloorUpdated(ratioFloorBps, newRatioFloorBps);
         ratioFloorBps = newRatioFloorBps;
     }
 
-    function setParameterChangeDelay(uint256 newDelay) external onlyGovernance {
+    function setParameterChangeDelay(uint256 newDelay) external onlyTimelock {
         require(newDelay >= 10 minutes && newDelay <= 48 hours, "ZiGX: delay range");
         emit ParameterChangeDelayUpdated(parameterChangeDelay, newDelay);
         parameterChangeDelay = newDelay;
     }
 
-    function setOracleDecimals(uint8 nextOracleDecimals) external onlyGovernance {
+    function setOracleDecimals(uint8 nextOracleDecimals) external onlyTimelock {
         require(nextOracleDecimals >= 2 && nextOracleDecimals <= 18, "ZiGX: decimals range");
         emit OracleDecimalsUpdated(oracleDecimals, nextOracleDecimals);
         oracleDecimals = nextOracleDecimals;
     }
 
-    function proposeReserveOracle(address newOracle) external onlyGovernance {
+    function proposeReserveOracle(address newOracle) external onlyTimelock {
         require(newOracle != address(0), "ZiGX: zero oracle");
         require(newOracle.code.length > 0, "ZiGX: oracle !contract");
         pendingReserveOracle = newOracle;
@@ -175,7 +199,7 @@ contract ZiGX is ERC20 {
         emit ReserveOracleProposed(newOracle, reserveOracleChangeReadyAt);
     }
 
-    function activateReserveOracle() external onlyGovernance {
+    function activateReserveOracle() external onlyTimelock {
         require(pendingReserveOracle != address(0), "ZiGX: no pending oracle");
         require(block.timestamp >= reserveOracleChangeReadyAt, "ZiGX: oracle change pending");
         address previousOracle = address(reserveOracle);
@@ -186,7 +210,7 @@ contract ZiGX is ERC20 {
         emit ReserveOracleUpdated(previousOracle, address(reserveOracle));
     }
 
-    function proposeReserveVault(address newVault) external onlyGovernance {
+    function proposeReserveVault(address newVault) external onlyTimelock {
         require(newVault != address(0), "ZiGX: zero vault");
         require(newVault.code.length > 0, "ZiGX: vault !contract");
         pendingReserveVault = newVault;
@@ -194,7 +218,7 @@ contract ZiGX is ERC20 {
         emit ReserveVaultProposed(newVault, reserveVaultChangeReadyAt);
     }
 
-    function activateReserveVault() external onlyGovernance {
+    function activateReserveVault() external onlyTimelock {
         require(pendingReserveVault != address(0), "ZiGX: no pending vault");
         require(block.timestamp >= reserveVaultChangeReadyAt, "ZiGX: vault change pending");
         address previousVault = reserveVault;
@@ -205,18 +229,18 @@ contract ZiGX is ERC20 {
         emit ReserveVaultUpdated(previousVault, reserveVault);
     }
 
-    function setReserveOracle(IReserveOracle newOracle) external onlyGovernance after2027 {
+    function setReserveOracle(IReserveOracle newOracle) external onlyTimelock {
         emit ReserveOracleUpdated(address(reserveOracle), address(newOracle));
         reserveOracle = newOracle;
     }
 
-    function setReserveVault(address newVault) external onlyGovernance after2027 {
+    function setReserveVault(address newVault) external onlyTimelock {
         require(newVault != address(0), "RESERVE_VAULT_ZERO");
         emit ReserveVaultUpdated(reserveVault, newVault);
         reserveVault = newVault;
     }
 
-    function setReserveDataStalePeriod(uint256 newPeriod) external onlyGovernance {
+    function setReserveDataStalePeriod(uint256 newPeriod) external onlyTimelock {
         reserveDataStalePeriod = newPeriod;
     }
 
@@ -231,12 +255,16 @@ contract ZiGX is ERC20 {
         pause();
     }
 
-    function unpause() external onlyGovernance after2027 {
+    function unpause() external onlyGovernance {
         _unpauseInternal("standard");
     }
 
-    function unpause(string calldata note) external onlyGovernance after2027 {
+    function unpause(string calldata note) external onlyGovernance {
         _unpauseInternal(note);
+    }
+
+    function guardianUnpause() external onlyGuardian {
+        _unpause();
     }
 
     function _unpauseInternal(string memory note) internal {
@@ -244,6 +272,10 @@ contract ZiGX is ERC20 {
         _paused = false;
         emit Unpaused(msg.sender);
         emit ResumeOperations(note);
+    }
+
+    function _unpause() internal {
+        _unpauseInternal("guardian");
     }
 
     function paused() external view returns (bool) {
@@ -382,14 +414,14 @@ contract ZiGX is ERC20 {
         emit GovernanceBurned(account, amount, reason);
     }
 
-    function postAuditReport(uint256 quarter, bytes32 hash) external onlyGovernance {
+    function postAuditReport(uint256 quarter, bytes32 hash) external onlyTimelock {
         require(hash != bytes32(0), "ZiGX: invalid hash");
         require(auditReportHash[quarter] == bytes32(0), "ZiGX: quarter set");
         auditReportHash[quarter] = hash;
         emit AuditReportPosted(quarter, hash);
     }
 
-    function pinPoRDashboard(string calldata ref) external onlyGovernance {
+    function pinPoRDashboard(string calldata ref) external onlyTimelock {
         require(bytes(ref).length != 0, "ZiGX: empty ref");
         require(!porRefLocked, "ZiGX: dashboard locked");
         porDashboardRef = ref;
@@ -398,14 +430,14 @@ contract ZiGX is ERC20 {
         emit PoRRefLocked();
     }
 
-    function setCommitmentHash(bytes32 hash) external onlyGovernance {
+    function setCommitmentHash(bytes32 hash) external onlyTimelock {
         require(hash != bytes32(0), "ZiGX: invalid hash");
         require(contractCommitmentHash == bytes32(0), "ZiGX: commitment set");
         contractCommitmentHash = hash;
         emit CommitmentHashSet(hash);
     }
 
-    function setPoRRoot(bytes32 merkleRoot, string calldata reportCID) external onlyGovernance {
+    function setPoRRoot(bytes32 merkleRoot, string calldata reportCID) external onlyTimelock {
         require(merkleRoot != bytes32(0), "ZiGX: invalid PoR root");
         require(bytes(reportCID).length != 0, "ZiGX: empty report CID");
 
