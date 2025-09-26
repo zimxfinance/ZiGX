@@ -12,7 +12,7 @@ interface IReserveOracle {
 
 contract ZiGX is ERC20 {
     uint8 private constant CUSTOM_DECIMALS = 6;
-    uint256 public constant MAX_SUPPLY = 100_000_000 * 10 ** CUSTOM_DECIMALS;
+    uint256 public constant MAX_SUPPLY = 1_000_000_000 * 10 ** CUSTOM_DECIMALS;
     uint256 public constant RESERVE_LOCK_UNTIL = 1_735_689_600; // Jan 1, 2030 UTC
 
     address public governance; // Gnosis Safe
