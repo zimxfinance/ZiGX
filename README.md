@@ -12,11 +12,5 @@ ZiGX is a USDC-backed settlement token used for reserves, remittances and SME pa
 
 ---
 
-## Features
-- Fixed supply (100,000,000 ZiGX)
-- Minting only with signed custodian attestations (EIP-712)
-- Burn-for-redemption with off-chain payout references
-- Proof-of-Reserves anchoring (merkle root + report CID)
-- Governance functions locked until 2027
-- Admin through multisig + timelock
+
 
