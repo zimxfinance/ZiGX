@@ -8,7 +8,7 @@ ZiGX is a USDC-backed settlement token used for reserves, remittances and SME pa
 ---
 
 ## Contracts
-- **ZiGX_Advanced_MainnetFinal.sol** – capped supply settlement token (100M max supply)
+- **ZiGX_Advanced_MainnetFinal.sol** – capped supply settlement token (1 billion max supply)
 
 ---
 
