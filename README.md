@@ -1,6 +1,6 @@
-# ZMIX Finance
+# ZiGX By ZimX Finance 
 
-A dual-token DeFi ecosystem featuring a USD-pegged reserve-backed token (ZiGX) and a utility governance token (ZIMX), built on Ethereum with comprehensive security features and transparent Proof-of-Reserve mechanisms.
+ZimX Finance introduces its dual-token DeFi ecosystem featuring a USD-pegged reserve-backed token (ZiGX) and a utility governance token (ZIMX), built on Ethereum with comprehensive security features and transparent Proof-of-Reserve mechanisms.
 
 ## 🎯 Overview
 
@@ -10,7 +10,6 @@ ZMIX Finance introduces an innovative tokenomics model combining:
 - **Transparent Operations**: Full on-chain transparency with Proof-of-Reserve attestations
 - **Multi-signature Governance**: Timelock-controlled parameter changes for security
 
-## 📊 Key Contracts
 
 ### 1. ZiGX (Reserve-Backed Token)
 
