@@ -85,7 +85,7 @@ A USD-pegged token backed by 100%+ reserves with on-chain verification and rate 
 5. **Emergency Controls**
    - Pause mechanism on all contracts
    - Guardian emergency unpause
-   - Parameter freeze (presale)
+   - Parameter freeze 
    - Emergency halt with reason logging
 
 ### Audit & Testing
